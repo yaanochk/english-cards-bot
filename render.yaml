@@ -11,7 +11,6 @@ services:
       - key: ALLOWED_USER_ID
         value: "1152370552"
 
-jobs:
   - type: cron
     name: english-cards-morning
     schedule: "0 6 * * *"
