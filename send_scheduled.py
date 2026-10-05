@@ -5,9 +5,12 @@ import random
 
 from telegram import Bot
 
-WORDS_FILE = os.path.join(os.path.dirname(__file__), "words.json")
+BASE_DIR = os.path.dirname(__file__)
+WORDS_FILE = os.path.join(BASE_DIR, "words.json")
+PROGRESS_FILE = os.path.join(BASE_DIR, "progress.json")
 CHAT_ID = int(os.environ.get("ALLOWED_USER_ID", "0"))
 QUIZ_COUNT = int(os.environ.get("QUIZ_COUNT", "5"))
+MASTERY_THRESHOLD = 5
 
 
 def load_words():
@@ -15,14 +18,34 @@ def load_words():
         return json.load(f)
 
 
+def load_progress():
+    if os.path.exists(PROGRESS_FILE):
+        with open(PROGRESS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
 def pick_cards():
-    cards = []
+    all_cards = []
     for title, words in load_words().items():
         for w in words:
-            cards.append({"en": w["en"], "ru": w["ru"]})
-    if not cards:
+            all_cards.append({"en": w["en"], "ru": w["ru"]})
+
+    if not all_cards:
         return []
-    return random.sample(cards, min(QUIZ_COUNT, len(cards)))
+
+    progress = load_progress()
+
+    non_mastered = [
+        c for c in all_cards
+        if progress.get(c["en"], {}).get("correct", 0) < MASTERY_THRESHOLD
+    ]
+
+    if not non_mastered:
+        print("Все слова выучены, рассылка пропущена.")
+        return []
+
+    return random.sample(non_mastered, min(QUIZ_COUNT, len(non_mastered)))
 
 
 async def main():

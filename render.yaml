@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: english-cards-bot
     runtime: python
     plan: free
