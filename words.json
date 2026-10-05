@@ -3,5 +3,8 @@
     {"en": "tinned", "ru": "консервированный"},
     {"en": "raw", "ru": "сырой"},
     {"en": "a bite to eat", "ru": "перекусить"}
+  ],
+  "English File Intermediate — Unit 1 — 1A — Test": [
+    {"en": "autodeploy_test", "ru": "тест_автодеплоя"}
   ]
 }
