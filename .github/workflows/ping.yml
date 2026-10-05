@@ -7,4 +7,4 @@ jobs:
   ping:
     runs-on: ubuntu-latest
     steps:
-      - run: curl -sf "https://english-cards-bot.onrender.com" || true
+      - run: curl -sf "https://english-cards-bot-c6xg.onrender.com" || true
