@@ -28,9 +28,21 @@ ALLOWED_USER_ID = int(os.environ.get("ALLOWED_USER_ID", "0"))
 MASTERY_THRESHOLD = 5
 
 MENU_BUTTONS = ReplyKeyboardMarkup(
-    [["🎴 Карточки", "🎲 Квиз"], ["📚 Словарь"]],
+    [
+        ["🎴 Карточки", "🎲 Квиз"],
+        ["🔁 Рус → Англ", "🎯 Варианты"],
+        ["⚡ Скорость", "📚 Словарь"],
+        ["🔀 Весь словарь", "♻️ Заново"],
+    ],
     resize_keyboard=True,
 )
+
+MODE_TITLES = {
+    "en_ru": "🎲 Квиз (Англ → Рус)",
+    "ru_en": "🔁 Тест (Рус → Англ)",
+    "choice": "🎯 Варианты (Англ → Рус)",
+    "speed": "⚡ Скорость (Англ → Рус)",
+}
 
 
 class HealthHandler(BaseHTTPRequestHandler):
@@ -85,24 +97,43 @@ def set_word_progress(progress, en, correct):
     save_progress(progress)
 
 
-def reset_word_progress(progress, en):
-    progress.pop(en, None)
-    save_progress(progress)
-
-
 def is_mastered(progress, en):
     return get_word_progress(progress, en) >= MASTERY_THRESHOLD
 
 
+def reset_quiz_state(context: ContextTypes.DEFAULT_TYPE):
+    for key in (
+        "quiz_mode",
+        "quiz_word",
+        "quiz_words",
+        "quiz_index",
+        "quiz_correct",
+        "quiz_wrong",
+        "quiz_mastered_new",
+        "quiz_options",
+        "quiz_correct_option",
+        "quiz_auto",
+        "queue",
+        "cards_total",
+    ):
+        context.user_data.pop(key, None)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reset_quiz_state(context)
     await update.message.reply_text(
         "🎓 <b>Твой личный тренер по английскому!</b>\n\n"
-        "Я присылаю карточки со словами из English File Intermediate.\n"
-        "Два раза в день — автоматическая тренировка, в любое время — по кнопкам.\n\n"
-        "<b>Как работать:</b>\n"
-        "🎴 Карточки — смотришь и открываешь перевод\n"
-        "🎲 Квиз — печатаешь перевод с клавиатуры\n"
-        "📚 Словарь — прогресс по всем словам",
+        "Слова из English File Intermediate. Выбери режим кнопками внизу 👇\n\n"
+        "🎴 <b>Карточки</b> — посмотреть слово и открыть перевод\n"
+        "🎲 <b>Квиз</b> — напечатать перевод с англ. на рус.\n"
+        "🔁 <b>Рус → Англ</b> — напечатать перевод с рус. на англ.\n"
+        "🎯 <b>Варианты</b> — выбрать правильный перевод из 4\n"
+        "⚡ <b>Скорость</b> — 10 слов подряд без остановки\n"
+        "📚 <b>Словарь</b> — прогресс по словам\n"
+        "🔀 <b>Весь словарь</b> — карточки по всем словам\n"
+        "♻️ <b>Заново</b> — сбросить прогресс\n\n"
+        f"Слово выучено, когда ответишь верно <b>{MASTERY_THRESHOLD}</b> раз — "
+        "и больше не появится в тестах.",
         parse_mode="HTML",
         reply_markup=MENU_BUTTONS,
     )
@@ -112,10 +143,16 @@ def is_owner(update: Update) -> bool:
     return ALLOWED_USER_ID and update.effective_user.id == ALLOWED_USER_ID
 
 
-async def send_card(chat_id, context: ContextTypes.DEFAULT_TYPE, card: dict, done: int, total: int):
-    progress_text = f"<i>{done + 1}/{total}</i>"
-    text = f"🇬🇧 <b>Переведи на русский:</b>\n\n<b>{card['en']}</b>\n\n{progress_text}"
+def available_words():
+    progress = load_progress()
+    return [c for c in flat_cards() if not is_mastered(progress, c["en"])]
 
+
+async def send_card(chat_id, context: ContextTypes.DEFAULT_TYPE, card: dict, done: int, total: int):
+    text = (
+        f"🇬🇧 <b>Переведи на русский:</b>\n\n<b>{card['en']}</b>\n\n"
+        f"<i>{done + 1}/{total}</i>"
+    )
     await context.bot.send_message(
         chat_id,
         text,
@@ -129,35 +166,29 @@ async def send_card(chat_id, context: ContextTypes.DEFAULT_TYPE, card: dict, don
     )
 
 
-async def start_cards(update: Update, context: ContextTypes.DEFAULT_TYPE, count: int = None):
-    cards_list = flat_cards()
+async def start_cards(update: Update, context: ContextTypes.DEFAULT_TYPE, only_new: bool = False):
+    reset_quiz_state(context)
+    cards_list = available_words() if only_new else flat_cards()
     if not cards_list:
-        await update.message.reply_text("📭 Словарь пока пуст. Добавим слова на занятии.", reply_markup=MENU_BUTTONS)
+        await update.message.reply_text(
+            "🎉 Новых слов нет — всё выучено! Используй «🔀 Весь словарь» для повтора.",
+            reply_markup=MENU_BUTTONS,
+        )
         return
 
-    if count:
-        sample = random.sample(cards_list, min(count, len(cards_list)))
-        context.user_data["queue"] = list(sample)
-    else:
-        context.user_data["queue"] = list(cards_list)
-
-    context.user_data["cards_total"] = len(context.user_data["queue"])
-    context.user_data.pop("quiz_word", None)
-    context.user_data.pop("quiz_mode", None)
+    context.user_data["queue"] = list(cards_list)
+    context.user_data["cards_total"] = len(cards_list)
     await send_card(update.effective_chat.id, context, context.user_data["queue"].pop(0), 0, context.user_data["cards_total"])
 
 
 async def cards(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await start_cards(update, context)
+    await start_cards(update, context, only_new=False)
 
 
 async def vocab(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_owner(update):
-        await update.message.reply_text("Это доступно только владельцу.", reply_markup=MENU_BUTTONS)
-        return
-
     progress = load_progress()
-    lines = []
+    mastered = sum(1 for c in flat_cards() if is_mastered(progress, c["en"]))
+    lines = [f"📊 <b>Выучено: {mastered} / {len(flat_cards())}</b>\n"]
     for title, words in load_words().items():
         lines.append(f"📚 {title}")
         for w in words:
@@ -166,7 +197,7 @@ async def vocab(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if cnt >= MASTERY_THRESHOLD:
                 status = "✅"
             elif cnt > 0:
-                status = f"🔄"
+                status = "🔄"
             else:
                 status = "⚪"
             lines.append(f"   {status} {en} — <b>{w['ru']}</b> ({cnt}/{MASTERY_THRESHOLD})")
@@ -178,38 +209,39 @@ async def vocab(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    progress = load_progress()
-    all_cards = flat_cards()
-
-    non_mastered = [c for c in all_cards if not is_mastered(progress, c["en"])]
-
-    if not non_mastered:
+async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
+    reset_quiz_state(context)
+    pool = available_words()
+    if not pool:
         await update.message.reply_text(
-            "🎉 Все слова выучены! Хочешь повторить всё заново?",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Повторить", callback_data="quiz_reset")]
-            ]),
+            "🎉 Все слова выучены! Сбрось прогресс кнопкой «♻️ Заново», чтобы повторить.",
+            reply_markup=MENU_BUTTONS,
         )
         return
 
-    sample = random.sample(non_mastered, min(5, len(non_mastered)))
+    count = 10 if mode == "speed" else 5
+    sample = random.sample(pool, min(count, len(pool)))
 
+    context.user_data["quiz_mode"] = mode
     context.user_data["quiz_words"] = list(sample)
     context.user_data["quiz_index"] = 0
     context.user_data["quiz_correct"] = 0
     context.user_data["quiz_wrong"] = 0
     context.user_data["quiz_mastered_new"] = 0
-    context.user_data["quiz_mode"] = True
-    context.user_data.pop("queue", None)
-    context.user_data.pop("cards_total", None)
+    context.user_data["quiz_auto"] = mode == "speed"
 
-    await send_quiz_word(update.effective_chat.id, context)
+    await context.bot.send_message(
+        update.effective_chat.id,
+        f"{MODE_TITLES.get(mode, 'Тест')}\nСлов в этой тренировке: <b>{len(sample)}</b>",
+        parse_mode="HTML",
+    )
+    await next_question(update.effective_chat.id, context)
 
 
-async def send_quiz_word(chat_id, context: ContextTypes.DEFAULT_TYPE):
+async def next_question(chat_id, context: ContextTypes.DEFAULT_TYPE):
     words = context.user_data.get("quiz_words", [])
     idx = context.user_data.get("quiz_index", 0)
+    mode = context.user_data.get("quiz_mode")
 
     if idx >= len(words):
         await finish_quiz(chat_id, context)
@@ -218,142 +250,100 @@ async def send_quiz_word(chat_id, context: ContextTypes.DEFAULT_TYPE):
     card = words[idx]
     context.user_data["quiz_word"] = card
 
+    if mode == "choice":
+        await send_choice(chat_id, context, card)
+    else:
+        await send_typing(chat_id, context, card, mode)
+
+
+async def send_typing(chat_id, context: ContextTypes.DEFAULT_TYPE, card: dict, mode: str):
+    if mode == "ru_en":
+        prompt = f"🔁 <b>Напиши по-английски:</b>\n\n<b>{card['ru']}</b>"
+    else:
+        prompt = f"✏️ <b>Напиши перевод на русский:</b>\n\n<b>{card['en']}</b>"
+    await context.bot.send_message(chat_id, prompt, parse_mode="HTML")
+
+
+def build_options(card: dict):
+    pool = [c["ru"] for c in flat_cards() if c["ru"] != card["ru"]]
+    random.shuffle(pool)
+    distractors = []
+    seen = set()
+    for ru in pool:
+        if ru not in seen:
+            seen.add(ru)
+            distractors.append(ru)
+        if len(distractors) == 3:
+            break
+    options = distractors + [card["ru"]]
+    random.shuffle(options)
+    correct_index = options.index(card["ru"])
+    return options, correct_index
+
+
+async def send_choice(chat_id, context: ContextTypes.DEFAULT_TYPE, card: dict):
+    options, correct_index = build_options(card)
+    context.user_data["quiz_options"] = options
+    context.user_data["quiz_correct_option"] = correct_index
+
+    buttons = [
+        [InlineKeyboardButton(opt, callback_data=f"opt|{i}")]
+        for i, opt in enumerate(options)
+    ]
     await context.bot.send_message(
         chat_id,
-        f"🎲 <b>Квиз!</b> Напиши перевод слова:\n\n<b>{card['en']}</b>",
+        f"🎯 <b>Выбери правильный перевод:</b>\n\n<b>{card['en']}</b>",
         parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(buttons),
     )
 
 
-async def finish_quiz(chat_id, context: ContextTypes.DEFAULT_TYPE):
-    correct = context.user_data.get("quiz_correct", 0)
-    wrong = context.user_data.get("quiz_wrong", 0)
-    mastered_new = context.user_data.get("quiz_mastered_new", 0)
-    total = len(context.user_data.get("quiz_words", []))
-
-    progress = load_progress()
-    words_left = len([c for c in flat_cards() if not is_mastered(progress, c["en"])])
-
-    msg = (
-        "🏁 <b>Квиз завершён!</b>\n\n"
-        f"📊 Всего слов: {total}\n"
-        f"✅ Правильно: {correct}\n"
-        f"❌ Неправильно: {wrong}\n"
-        f"🎉 Выучено новых: {mastered_new}\n"
-        f"📚 Осталось выучить: {words_left}"
-    )
-
-    await context.bot.send_message(chat_id, msg, parse_mode="HTML")
-
-    context.user_data.pop("quiz_mode", None)
-    context.user_data.pop("quiz_word", None)
-    context.user_data.pop("quiz_words", None)
-    context.user_data.pop("quiz_index", None)
-    context.user_data.pop("quiz_correct", None)
-    context.user_data.pop("quiz_wrong", None)
-    context.user_data.pop("quiz_mastered_new", None)
-
-    progress = load_progress()
-    non_mastered = [c for c in flat_cards() if not is_mastered(progress, c["en"])]
-    if non_mastered:
-        await context.bot.send_message(
-            chat_id,
-            "Хочешь ещё? Нажимай кнопки внизу 👇",
-            reply_markup=MENU_BUTTONS,
-        )
-    else:
-        await context.bot.send_message(
-            chat_id,
-            "🎉 Поздравляю! Ты выучил(а) все слова!",
-            reply_markup=MENU_BUTTONS,
-        )
+def check_answer(user_text: str, card: dict, mode: str) -> bool:
+    text = user_text.strip().lower()
+    if mode == "ru_en":
+        return text == card["en"].strip().lower()
+    return text == card["ru"].strip().lower()
 
 
-async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if text == "🎴 Карточки":
-        await cards(update, context)
-    elif text == "🎲 Квиз":
-        await quiz(update, context)
-    elif text == "📚 Словарь":
-        await vocab(update, context)
-
-
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get("quiz_mode"):
-        await handle_quiz_answer(update, context)
-    else:
-        await handle_menu(update, context)
-
-
-async def handle_quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get("quiz_mode"):
-        return
-
-    user_text = update.message.text.strip()
-    card = context.user_data.get("quiz_word")
-    if not card:
-        return
-
-    chat_id = update.effective_chat.id
+async def register_result(chat_id, context: ContextTypes.DEFAULT_TYPE, correct: bool, card: dict):
     progress = load_progress()
     en = card["en"]
-    ru = card["ru"]
 
-    if user_text.lower() == "?" or user_text.lower() == "пропуск":
-        await context.bot.send_message(
-            chat_id,
-            f"⏭ Пропущено. Правильно: <b>{ru}</b>",
-            parse_mode="HTML",
-        )
-        context.user_data["quiz_index"] += 1
-        await ask_continue(chat_id, context)
-        return
-
-    if user_text.lower().strip() == ru.lower().strip():
-        current = get_word_progress(progress, en)
-        new_count = current + 1
+    if correct:
+        new_count = get_word_progress(progress, en) + 1
         set_word_progress(progress, en, new_count)
         context.user_data["quiz_correct"] += 1
-
         if new_count >= MASTERY_THRESHOLD:
             context.user_data["quiz_mastered_new"] += 1
             await context.bot.send_message(
-                chat_id,
-                "✅ Верно! 🎉 <b>Слово выучено!</b>",
-                parse_mode="HTML",
+                chat_id, "✅ Верно! 🎉 <b>Слово выучено!</b>", parse_mode="HTML"
             )
         else:
             await context.bot.send_message(
-                chat_id,
-                f"✅ Верно! ({new_count}/{MASTERY_THRESHOLD})",
-                parse_mode="HTML",
+                chat_id, f"✅ Верно! ({new_count}/{MASTERY_THRESHOLD})", parse_mode="HTML"
             )
-
-        context.user_data["quiz_index"] += 1
-        await ask_continue(chat_id, context)
     else:
         set_word_progress(progress, en, 0)
         context.user_data["quiz_wrong"] += 1
-
         await context.bot.send_message(
             chat_id,
-            f"❌ Неверно. Правильно: <b>{ru}</b>",
+            f"❌ Неверно. Правильно: <b>{card['ru']}</b> — <b>{card['en']}</b>",
             parse_mode="HTML",
         )
 
-        context.user_data["quiz_index"] += 1
+    context.user_data["quiz_index"] += 1
+    if context.user_data.get("quiz_auto"):
+        await next_question(chat_id, context)
+    else:
         await ask_continue(chat_id, context)
 
 
 async def ask_continue(chat_id, context: ContextTypes.DEFAULT_TYPE):
     words = context.user_data.get("quiz_words", [])
     idx = context.user_data.get("quiz_index", 0)
-
     if idx >= len(words):
         await finish_quiz(chat_id, context)
         return
-
     await context.bot.send_message(
         chat_id,
         "Продолжить?",
@@ -366,6 +356,95 @@ async def ask_continue(chat_id, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def finish_quiz(chat_id, context: ContextTypes.DEFAULT_TYPE):
+    correct = context.user_data.get("quiz_correct", 0)
+    wrong = context.user_data.get("quiz_wrong", 0)
+    mastered_new = context.user_data.get("quiz_mastered_new", 0)
+    total = len(context.user_data.get("quiz_words", []))
+    words_left = len(available_words())
+
+    msg = (
+        "🏁 <b>Тренировка завершена!</b>\n\n"
+        f"📊 Всего слов: {total}\n"
+        f"✅ Правильно: {correct}\n"
+        f"❌ Ошибок: {wrong}\n"
+        f"🎉 Выучено новых: {mastered_new}\n"
+        f"📚 Осталось выучить: {words_left}"
+    )
+    await context.bot.send_message(chat_id, msg, parse_mode="HTML")
+
+    reset_quiz_state(context)
+
+    if words_left:
+        await context.bot.send_message(
+            chat_id, "Хочешь ещё? Выбирай режим кнопками внизу 👇", reply_markup=MENU_BUTTONS
+        )
+    else:
+        await context.bot.send_message(
+            chat_id, "🎉 Поздравляю! Ты выучил(а) все слова!", reply_markup=MENU_BUTTONS
+        )
+
+
+async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text == "🎴 Карточки":
+        await start_cards(update, context, only_new=True)
+    elif text == "🔀 Весь словарь":
+        await start_cards(update, context, only_new=False)
+    elif text == "🎲 Квиз":
+        await start_quiz(update, context, "en_ru")
+    elif text == "🔁 Рус → Англ":
+        await start_quiz(update, context, "ru_en")
+    elif text == "🎯 Варианты":
+        await start_quiz(update, context, "choice")
+    elif text == "⚡ Скорость":
+        await start_quiz(update, context, "speed")
+    elif text == "📚 Словарь":
+        await vocab(update, context)
+    elif text == "♻️ Заново":
+        reset_quiz_state(context)
+        await update.message.reply_text(
+            "♻️ Готово! Состояние сброшено, выбери режим заново. "
+            "(Прогресс слов сохраняется — сбросить его можно кнопкой ниже.)",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🗑 Сбросить прогресс слов", callback_data="quiz_reset")]
+            ]),
+        )
+
+
+async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mode = context.user_data.get("quiz_mode")
+    if mode in ("en_ru", "ru_en", "speed"):
+        await handle_quiz_answer(update, context)
+    else:
+        await handle_menu(update, context)
+
+
+async def handle_quiz_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    mode = context.user_data.get("quiz_mode")
+    user_text = update.message.text.strip()
+    card = context.user_data.get("quiz_word")
+    if not card:
+        return
+    chat_id = update.effective_chat.id
+
+    if user_text.lower() in ("?", "пропуск", "skip"):
+        await context.bot.send_message(
+            chat_id,
+            f"⏭ Пропущено. Правильно: <b>{card['ru']}</b> — <b>{card['en']}</b>",
+            parse_mode="HTML",
+        )
+        context.user_data["quiz_index"] += 1
+        if context.user_data.get("quiz_auto"):
+            await next_question(chat_id, context)
+        else:
+            await ask_continue(chat_id, context)
+        return
+
+    correct = check_answer(user_text, card, mode)
+    await register_result(chat_id, context, correct, card)
+
+
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -376,32 +455,19 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         en = data.split("|", 1)[1]
         ru = next((c["ru"] for c in flat_cards() if c["en"] == en), "?")
         queue = context.user_data.get("queue", [])
-        done = context.user_data.get("cards_total", 0) - len(queue)
-
-        markup = None
-        if queue:
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➡ Дальше", callback_data="next")]
-            ])
-        elif not queue:
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏁 Завершить", callback_data="finish")]
-            ])
-        await query.edit_message_text(
-            f"✅ <b>{en}</b> — <b>{ru}</b>",
-            parse_mode="HTML",
-            reply_markup=markup,
-        )
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➡ Дальше", callback_data="next")]
+        ]) if queue else InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏁 Завершить", callback_data="finish")]
+        ])
+        await query.edit_message_text(f"✅ <b>{en}</b> — <b>{ru}</b>", parse_mode="HTML", reply_markup=markup)
     elif data == "skip":
         queue = context.user_data.get("queue", [])
-        if queue:
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("➡ Дальше", callback_data="next")]
-            ])
-        else:
-            markup = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🏁 Завершить", callback_data="finish")]
-            ])
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("➡ Дальше", callback_data="next")]
+        ]) if queue else InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏁 Завершить", callback_data="finish")]
+        ])
         await query.edit_message_text("⏭ Пропущено.", reply_markup=markup)
     elif data == "next":
         queue = context.user_data.get("queue", [])
@@ -413,14 +479,22 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "finish":
         total = context.user_data.get("cards_total", 0)
         await query.edit_message_text(
-            f"🎉 Готово! Повторили <b>{total}</b> слов(а).\n"
-            "Хочешь ещё? Нажимай кнопки внизу 👇",
+            f"🎉 Готово! Повторили <b>{total}</b> слов(а).",
             parse_mode="HTML",
         )
-        context.user_data.pop("queue", None)
-        context.user_data.pop("cards_total", None)
+        reset_quiz_state(context)
+    elif data.startswith("opt|"):
+        idx = int(data.split("|", 1)[1])
+        options = context.user_data.get("quiz_options", [])
+        correct_option = context.user_data.get("quiz_correct_option")
+        card = context.user_data.get("quiz_word")
+        chosen = options[idx] if 0 <= idx < len(options) else "?"
+        await query.edit_message_text(
+            f"Твой выбор: <b>{chosen}</b>", parse_mode="HTML"
+        )
+        await register_result(chat_id, context, idx == correct_option, card)
     elif data == "quiz_continue":
-        await send_quiz_word(chat_id, context)
+        await next_question(chat_id, context)
     elif data == "quiz_stop":
         await finish_quiz(chat_id, context)
     elif data == "quiz_reset":
@@ -428,8 +502,9 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for card in flat_cards():
             progress.pop(card["en"], None)
         save_progress(progress)
+        reset_quiz_state(context)
         await query.edit_message_text(
-            "🔄 Прогресс сброшен! Все слова можно учить заново.\n\nНажми «🎲 Квиз» в меню, чтобы начать.",
+            "🗑 Прогресс сброшен! Все слова снова в тренировке.\nВыбирай режим кнопками внизу 👇",
         )
 
 
@@ -438,14 +513,11 @@ def main():
     if not token:
         raise SystemExit("Переменная BOT_TOKEN не задана!")
 
-    t = threading.Thread(target=start_http_server, daemon=True)
-    t.start()
+    threading.Thread(target=start_http_server, daemon=True).start()
 
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("cards", cards))
-    app.add_handler(CommandHandler("quiz", quiz))
-    app.add_handler(CommandHandler("vocab", vocab))
+    app.add_handler(CommandHandler("menu", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     app.add_handler(CallbackQueryHandler(button))
 
